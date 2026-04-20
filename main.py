@@ -54,6 +54,15 @@ class PazaruvajMasterScraper:
             print(f"Google Sheets Setup Error: {e}")
             self.worksheet = None
 
+    def update_live_status(self, message):
+        """ড্যাশবোর্ডে লাইভ দেখানোর জন্য শিটে স্ট্যাটাস আপডেট করা"""
+        if not self.worksheet: return
+        try:
+            # Process_Log শিটের H1 সেলে স্ট্যাটাস আপডেট হবে
+            status_sheet = self.spreadsheet.worksheet("Process_Log")
+            status_sheet.update_acell('H1', f"LIVE: {message} | {datetime.now().strftime('%H:%M:%S')}")
+        except: pass
+
     def init_csv(self):
         with open(self.filename, mode='w', newline='', encoding='utf-8-sig') as f:
             writer = csv.DictWriter(f, fieldnames=self.headers)
@@ -103,12 +112,8 @@ class PazaruvajMasterScraper:
                         page_found += 1
 
             if page_found == 0: break
-            print(f"Page {page}: Found {page_found} items.")
-            if 'rel="next"' not in res.text: break
-            page += 1
-            time.sleep(1)
-      
-         # --- লাইভ আপডেট এখানে দেওয়া হয়েছে ---
+                
+             # --- লাইভ আপডেট এখানে দেওয়া হয়েছে ---
             self.update_live_status(f"Page {page}: Found {page_found} items (Total: {len(all_links)})")
             print(f"Page {page}: Found {page_found} items.")
             
