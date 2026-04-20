@@ -151,10 +151,10 @@ class PazaruvajMasterScraper:
         # ডাটা মেপিং
         brand = product.get('producers', [{}])[0].get('name', 'N/A')
         cat = " > ".join([b.get('name', '') for b in detail.get('category', {}).get('breadcrumbs', [])])
+        # --- ফিক্সড লজিক: description বা name খালি থাকলেও আর এরর আসবে না ---
         raw_desc = product.get('description') or "" # যদি None থাকে তবে খালি স্ট্রিং নিবে
         clean_desc = re.sub(r'<[^<]+?>', '', raw_desc).strip()
-        clean_desc = re.sub(r'<[^>]+>', '', clean_desc)  # সব ট্যাগ রিমুভ
-        clean_desc = re.sub(r'\n\s*\n', '\n', clean_desc).strip()  # বাড়তি স্পেস কমানো
+        
         p_name = product.get('name') or "Unknown Product"
 
         attrs = product.get('attributes', {}).get('attributes', [])
