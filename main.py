@@ -9,6 +9,7 @@ from lxml import html
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 class PazaruvajMasterScraper:
     def __init__(self):
         # ১. বেসিক সেটিংস
@@ -21,11 +22,11 @@ class PazaruvajMasterScraper:
             "Images", "Specs", "Description", "Stock_Status", "Last_Updated"
         ]
         self.visited_ids = set()
-        
+
         # ২. গুগল শিট কানেকশন এবং অটো-ক্লিন
         self.sheet_name = "Pazaruvaj Smartfones"
         self.setup_google_sheets()
-        
+
         # ৩. লোকাল CSV ফাইল ইনিশিয়ালাইজেশন
         self.init_csv()
 
@@ -34,17 +35,17 @@ class PazaruvajMasterScraper:
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds_json = os.environ.get('G_SHEET_CREDS')
-            
+
             if creds_json:
                 creds_dict = json.loads(creds_json)
                 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             else:
                 creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
-            
+
             self.client = gspread.authorize(creds)
             self.spreadsheet = self.client.open(self.sheet_name)
             self.worksheet = self.spreadsheet.worksheet("Raw_Data")
-            
+
             # অটো-ক্লিন: নতুন ডাটা আসার আগে পুরনো সব মুছে হেডার বসানো
             self.worksheet.clear()
             self.worksheet.append_row(self.headers)
@@ -75,7 +76,8 @@ class PazaruvajMasterScraper:
         try:
             res = requests.get(url, impersonate=self.impersonate, timeout=30)
             return res if res.status_code == 200 else None
-        except: return None
+        except:
+            return None
 
     def get_product_links(self, category_url):
         """আপনার দেওয়া স্পেসিফিক XPath ব্যবহার করে সব লিঙ্ক খোঁজা"""
@@ -134,18 +136,21 @@ class PazaruvajMasterScraper:
         # ডাটা মেপিং
         brand = product.get('producers', [{}])[0].get('name', 'N/A')
         cat = " > ".join([b.get('name', '') for b in detail.get('category', {}).get('breadcrumbs', [])])
-        clean_desc = re.sub('<[^<]+?>', '', product.get('description', '')).strip()
-        
+        raw_description = product.get('description', '')
+        clean_desc = re.sub(r'<(br|p|div|li|tr|h1|h2|h3)[^>]*>', '\n', raw_description)  # ট্যাগ বদলে নিউ লাইন
+        clean_desc = re.sub(r'<[^>]+>', '', clean_desc)  # সব ট্যাগ রিমুভ
+        clean_desc = re.sub(r'\n\s*\n', '\n', clean_desc).strip()  # বাড়তি স্পেস কমানো
+
         attrs = product.get('attributes', {}).get('attributes', [])
-        specs = "|".join([f"{a['name']}: {a['value']}" for a in attrs])
+        specs = "\n".join([f"{a['name']}: {a['value']}" for a in attrs])
         ean = next((a['value'] for a in attrs if 'ean' in a['name'].lower()), "N/A")
         mpn = next((a['value'] for a in attrs if 'mpn' in a['name'].lower()), "N/A")
-        
+
         imgs = ",".join(filter(None, [i.get('url') for i in product.get('media', {}).get('images', [])]))
         if not imgs and product.get('mainImage'): imgs = product['mainImage'].get('url')
-        
+
         price = detail['product']['minPrice']
-        
+
         # Best Seller
         seller = "N/A"
         all_offers = (detail.get('offers', {}).get('regular', []) + detail.get('offers', {}).get('bidding', []))
@@ -158,7 +163,7 @@ class PazaruvajMasterScraper:
         if variants_list:
             curr_v = next((v for v in variants_list if str(v.get('platformProductId')) == str(raw_id)), None)
             if curr_v: storage = curr_v.get('value')
-        
+
         if storage == "Standard":
             mem_match = re.search(r'(\d+\s*(?:GB|TB))', product.get('name', ''), re.IGNORECASE)
             if mem_match: storage = mem_match.group(1)
@@ -181,7 +186,7 @@ class PazaruvajMasterScraper:
                     time.sleep(1)
                     v_data = self.scrape_product_details(v_url, True, current_p_id)
                     if v_data: current_row.extend(v_data)
-        
+
         return current_row
 
     def run(self):
@@ -190,10 +195,10 @@ class PazaruvajMasterScraper:
         try:
             # গুগল শিট থেকে ক্যাটাগরি লিঙ্ক পড়া
             cat_worksheet = self.spreadsheet.worksheet("Categories")
-            all_cat_urls = cat_worksheet.col_values(1)[1:] # প্রথম কলামের ২ নম্বর রো থেকে সব
-            
+            all_cat_urls = cat_worksheet.col_values(1)[1:]  # প্রথম কলামের ২ নম্বর রো থেকে সব
+
             valid_urls = [u.strip() for u in all_cat_urls if u and u.strip().startswith('http')]
-            
+
             if not valid_urls:
                 print("No valid URLs found in 'Categories' sheet.")
                 return
@@ -205,16 +210,17 @@ class PazaruvajMasterScraper:
                 print(f"Found {len(product_links)} unique products in this category.")
 
                 for i, link in enumerate(product_links):
-                    print(f"[{i+1}/{len(product_links)}] Processing: {link}")
+                    print(f"[{i + 1}/{len(product_links)}] Processing: {link}")
                     data = self.scrape_product_details(link)
                     if data:
-                        self.save_to_csv(data)      # লোকাল CSV ব্যাকআপ
-                        self.upload_to_gsheet(data) # গুগল শিটে লাইভ পুশ
+                        self.save_to_csv(data)  # লোকাল CSV ব্যাকআপ
+                        self.upload_to_gsheet(data)  # গুগল শিটে লাইভ পুশ
                     time.sleep(1)
-            
+
             print("\n--- SYNC COMPLETED SUCCESSFULLY ---")
         except Exception as e:
             print(f"Critical System Error: {e}")
+
 
 if __name__ == "__main__":
     scraper = PazaruvajMasterScraper()
