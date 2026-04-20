@@ -129,7 +129,24 @@ class PazaruvajMasterScraper:
             props = data.get('props', {}).get('pageProps', {})
             return props.get('initialData', {}).get('productDetail') or props.get('productDetail')
         return None
-
+        
+def clean_html(self, raw_html):
+        """HTML ট্যাগ রিমুভ করবে কিন্তু নতুন লাইন (\n) বজায় রাখবে"""
+        if not raw_html:
+            return "N/A"
+        
+        # ১. প্যারাগ্রাফ, ব্রেক এবং লিস্ট ট্যাগগুলোকে নিউ-লাইন দিয়ে বদলে দিবে
+        # এতে "AppleМодел" না হয়ে "Apple\nМодел" হবে
+        text = re.sub(r'<(br|p|div|li|tr|h1|h2|h3)[^>]*>', '\n', raw_html)
+        
+        # ২. বাকি সব HTML ট্যাগ মুছে ফেলবে
+        text = re.sub(r'<[^>]+>', '', text)
+        
+        # ৩. অতিরিক্ত খালি স্পেস বা মাল্টিপল নিউ-লাইন ক্লিন করবে
+        text = re.sub(r'\n\s*\n', '\n', text) 
+        
+        return text.strip()
+    
     def scrape_product_details(self, url, is_sub_variant=False, parent_id_val=None):
         """ভ্যারিয়েশন হ্যান্ডেলিং এবং মেমোরি ডিটেকশন সহ ডিটেইল স্ক্র্যাপার"""
         res = self.get_response(url)
@@ -139,8 +156,6 @@ class PazaruvajMasterScraper:
         if not detail: return None
 
         product = detail.get('product', {})
-        if not product: return None
-            
         raw_id = product.get('localId')
         current_p_id = f"p{raw_id}"
 
@@ -151,14 +166,14 @@ class PazaruvajMasterScraper:
         # ডাটা মেপিং
         brand = product.get('producers', [{}])[0].get('name', 'N/A')
         cat = " > ".join([b.get('name', '') for b in detail.get('category', {}).get('breadcrumbs', [])])
-        # --- ফিক্সড লজিক: description বা name খালি থাকলেও আর এরর আসবে না ---
-        raw_desc = product.get('description') or "" # যদি None থাকে তবে খালি স্ট্রিং নিবে
-        clean_desc = re.sub(r'<[^<]+?>', '', raw_desc).strip()
-        
-        p_name = product.get('name') or "Unknown Product"
+        # ডেসক্রিপশন ফরম্যাটিং (আমাদের নতুন ফাংশন ব্যবহার করে)
+        raw_description = product.get('description') or ""
+        clean_desc = self.clean_html(raw_description)
 
+        # স্পেকস (Specs) ফরম্যাটিং (প্রতিটি আইটেম নতুন লাইনে আসবে)
         attrs = product.get('attributes', {}).get('attributes', [])
         specs = "\n".join([f"{a['name']}: {a['value']}" for a in attrs])
+        
         ean = next((a['value'] for a in attrs if 'ean' in a['name'].lower()), "N/A")
         mpn = next((a['value'] for a in attrs if 'mpn' in a['name'].lower()), "N/A")
 
