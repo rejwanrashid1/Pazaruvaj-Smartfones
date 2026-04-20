@@ -107,8 +107,16 @@ class PazaruvajMasterScraper:
             if 'rel="next"' not in res.text: break
             page += 1
             time.sleep(1)
+      
+         # --- লাইভ আপডেট এখানে দেওয়া হয়েছে ---
+            self.update_live_status(f"Page {page}: Found {page_found} items (Total: {len(all_links)})")
+            print(f"Page {page}: Found {page_found} items.")
+            
+            if 'rel="next"' not in res.text: break
+            page += 1
+            time.sleep(1)
         return all_links
-
+        
     def extract_json_data(self, html_text):
         match = re.search(r'<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>', html_text)
         if match:
@@ -188,37 +196,44 @@ class PazaruvajMasterScraper:
                     if v_data: current_row.extend(v_data)
 
         return current_row
+        
 
+                
     def run(self):
+        self.update_live_status("Initializing Scraper...")
         """Categories শিট থেকে লিঙ্ক নিয়ে কাজ শুরু করবে"""
         print("\n--- System Starting: Reading Categories from Sheet ---")
         try:
             # গুগল শিট থেকে ক্যাটাগরি লিঙ্ক পড়া
             cat_worksheet = self.spreadsheet.worksheet("Categories")
             all_cat_urls = cat_worksheet.col_values(1)[1:]  # প্রথম কলামের ২ নম্বর রো থেকে সব
-
             valid_urls = [u.strip() for u in all_cat_urls if u and u.strip().startswith('http')]
 
             if not valid_urls:
                 print("No valid URLs found in 'Categories' sheet.")
+                self.update_live_status("Error: No URLs found.")
                 return
 
             print(f"Total Categories to process: {len(valid_urls)}")
 
             for cat_url in valid_urls:
+                self.update_live_status(f"Fetching links for: {cat_url.split('/')[-2]}")
                 product_links = self.get_product_links(cat_url)
                 print(f"Found {len(product_links)} unique products in this category.")
 
                 for i, link in enumerate(product_links):
+                    self.update_live_status(f"Scraping Product {i+1}/{len(product_links)}")
                     print(f"[{i + 1}/{len(product_links)}] Processing: {link}")
                     data = self.scrape_product_details(link)
                     if data:
                         self.save_to_csv(data)  # লোকাল CSV ব্যাকআপ
                         self.upload_to_gsheet(data)  # গুগল শিটে লাইভ পুশ
                     time.sleep(1)
-
+                    
+            self.update_live_status("SYNC COMPLETED SUCCESSFULLY")
             print("\n--- SYNC COMPLETED SUCCESSFULLY ---")
         except Exception as e:
+            self.update_live_status(f"System Error: {str(e)[:20]}")
             print(f"Critical System Error: {e}")
 
 
