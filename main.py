@@ -9,8 +9,9 @@ from lxml import html
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-class PazaruvajUltimateScraper:
+class PazaruvajMasterScraper:
     def __init__(self):
+        # ১. বেসিক সেটিংস
         self.base_url = "https://www.pazaruvaj.com"
         self.filename = "Master_Scrape.csv"
         self.impersonate = "chrome110"
@@ -20,37 +21,39 @@ class PazaruvajUltimateScraper:
             "Images", "Specs", "Description", "Stock_Status", "Last_Updated"
         ]
         self.visited_ids = set()
+        
+        # ২. গুগল শিট কানেকশন এবং অটো-ক্লিন
+        self.sheet_name = "Pazaruvaj Smartfones"
         self.setup_google_sheets()
+        
+        # ৩. লোকাল CSV ফাইল ইনিশিয়ালাইজেশন
         self.init_csv()
 
     def setup_google_sheets(self):
-        """গুগল শিট কানেক্ট এবং অটো-ক্লিন লজিক"""
+        """গুগল শিট কানেক্ট করবে এবং রান শুরু হওয়ার আগে Raw_Data ক্লিন করবে"""
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            
-            # GitHub Secrets থেকে ক্রেডেনশিয়াল নেওয়া
             creds_json = os.environ.get('G_SHEET_CREDS')
+            
             if creds_json:
                 creds_dict = json.loads(creds_json)
                 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             else:
-                # লোকাল পিসিতে টেস্টের জন্য
                 creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
             
             self.client = gspread.authorize(creds)
-            self.spreadsheet = self.client.open("Pazaruvaj Smartfones")
+            self.spreadsheet = self.client.open(self.sheet_name)
             self.worksheet = self.spreadsheet.worksheet("Raw_Data")
             
-            # ডাটা পাঠানোর আগে শিট পুরোপুরি পরিষ্কার করা (হেডার সহ)
+            # অটো-ক্লিন: নতুন ডাটা আসার আগে পুরনো সব মুছে হেডার বসানো
             self.worksheet.clear()
             self.worksheet.append_row(self.headers)
-            print("Successfully connected to Google Sheet and cleaned Raw_Data.")
+            print(f"Connected to {self.sheet_name}. Raw_Data sheet has been cleaned.")
         except Exception as e:
-            print(f"Google Sheets Connection Error: {e}")
+            print(f"Google Sheets Setup Error: {e}")
             self.worksheet = None
 
     def init_csv(self):
-        """লোকাল ব্যাকআপের জন্য CSV ফাইল তৈরি"""
         with open(self.filename, mode='w', newline='', encoding='utf-8-sig') as f:
             writer = csv.DictWriter(f, fieldnames=self.headers)
             writer.writeheader()
@@ -61,7 +64,6 @@ class PazaruvajUltimateScraper:
             writer.writerows(data_list)
 
     def upload_to_gsheet(self, data_list):
-        """গুগল শিটে রো (Row) আপলোড করা"""
         if self.worksheet:
             try:
                 rows = [[item.get(h, "") for h in self.headers] for item in data_list]
@@ -81,7 +83,7 @@ class PazaruvajUltimateScraper:
         all_links = []
         xpath_query = '//li[@class="c-product-list__item"]//a[contains(@class, "c-product__secondary-cta") or (parent::h3 and not(ancestor::li//a[contains(@class, "c-product__secondary-cta")]))]'
 
-        print("\n--- Phase 1: Finding Product Links ---")
+        print(f"Scanning Category: {category_url}")
         while True:
             current_url = f"{category_url}?f={page}" if page > 1 else category_url
             res = self.get_response(current_url)
@@ -99,103 +101,121 @@ class PazaruvajUltimateScraper:
                         page_found += 1
 
             if page_found == 0: break
-            print(f"Page {page}: Found {page_found} links. Total: {len(all_links)}")
+            print(f"Page {page}: Found {page_found} items.")
             if 'rel="next"' not in res.text: break
             page += 1
             time.sleep(1)
         return all_links
 
+    def extract_json_data(self, html_text):
+        match = re.search(r'<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>', html_text)
+        if match:
+            data = json.loads(match.group(1))
+            props = data.get('props', {}).get('pageProps', {})
+            return props.get('initialData', {}).get('productDetail') or props.get('productDetail')
+        return None
+
     def scrape_product_details(self, url, is_sub_variant=False, parent_id_val=None):
-        """প্রোডাক্ট ডিটেইলস এবং ভ্যারিয়েশন স্ক্র্যাপ করা"""
+        """ভ্যারিয়েশন হ্যান্ডেলিং এবং মেমোরি ডিটেকশন সহ ডিটেইল স্ক্র্যাপার"""
         res = self.get_response(url)
         if not res: return None
 
-        match = re.search(r'<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>', res.text)
-        if not match: return None
+        detail = self.extract_json_data(res.text)
+        if not detail: return None
+
+        product = detail.get('product', {})
+        raw_id = product.get('localId')
+        current_p_id = f"p{raw_id}"
+
+        # ডুপ্লিকেট এড়ানো
+        if current_p_id in self.visited_ids: return None
+        self.visited_ids.add(current_p_id)
+
+        # ডাটা মেপিং
+        brand = product.get('producers', [{}])[0].get('name', 'N/A')
+        cat = " > ".join([b.get('name', '') for b in detail.get('category', {}).get('breadcrumbs', [])])
+        clean_desc = re.sub('<[^<]+?>', '', product.get('description', '')).strip()
         
+        attrs = product.get('attributes', {}).get('attributes', [])
+        specs = "|".join([f"{a['name']}: {a['value']}" for a in attrs])
+        ean = next((a['value'] for a in attrs if 'ean' in a['name'].lower()), "N/A")
+        mpn = next((a['value'] for a in attrs if 'mpn' in a['name'].lower()), "N/A")
+        
+        imgs = ",".join(filter(None, [i.get('url') for i in product.get('media', {}).get('images', [])]))
+        if not imgs and product.get('mainImage'): imgs = product['mainImage'].get('url')
+        
+        price = detail['product']['minPrice']
+        
+        # Best Seller
+        seller = "N/A"
+        all_offers = (detail.get('offers', {}).get('regular', []) + detail.get('offers', {}).get('bidding', []))
+        if all_offers:
+            seller = sorted(all_offers, key=lambda x: x.get('price', 999999))[0].get('shop', {}).get('name', 'N/A')
+
+        # মেমোরি ভ্যারিয়েশন ফিক্স (Standard এর বদলে সঠিক ভ্যালু)
+        storage = "Standard"
+        variants_list = detail.get('variants', [])
+        if variants_list:
+            curr_v = next((v for v in variants_list if str(v.get('platformProductId')) == str(raw_id)), None)
+            if curr_v: storage = curr_v.get('value')
+        
+        if storage == "Standard":
+            mem_match = re.search(r'(\d+\s*(?:GB|TB))', product.get('name', ''), re.IGNORECASE)
+            if mem_match: storage = mem_match.group(1)
+
+        current_row = [{
+            "Product_URL": url, "Product_ID": current_p_id,
+            "Parent_ID": parent_id_val if parent_id_val else current_p_id,
+            "Title": product.get('name'), "Storage_Variation": storage, "Category": cat, "Brand": brand,
+            "Price_EUR": price, "Seller_Name": seller, "EAN": ean, "MPN": mpn, "Images": imgs,
+            "Specs": specs, "Description": clean_desc, "Stock_Status": "In Stock",
+            "Last_Updated": datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+        }]
+
+        # সাব-ভ্যারিয়েশন ভিজিট (যদি এটি মেইন কল হয়)
+        if not is_sub_variant:
+            for v in variants_list:
+                v_id = f"p{v.get('platformProductId')}"
+                if v_id not in self.visited_ids:
+                    v_url = f"{self.base_url}/p/{v.get('slug', {}).get('value', 'v')}-p{v.get('platformProductId')}/"
+                    time.sleep(1)
+                    v_data = self.scrape_product_details(v_url, True, current_p_id)
+                    if v_data: current_row.extend(v_data)
+        
+        return current_row
+
+    def run(self):
+        """Categories শিট থেকে লিঙ্ক নিয়ে কাজ শুরু করবে"""
+        print("\n--- System Starting: Reading Categories from Sheet ---")
         try:
-            data = json.loads(match.group(1))
-            props = data.get('props', {}).get('pageProps', {})
-            detail = props.get('initialData', {}).get('productDetail') or props.get('productDetail')
-            if not detail: return None
+            # গুগল শিট থেকে ক্যাটাগরি লিঙ্ক পড়া
+            cat_worksheet = self.spreadsheet.worksheet("Categories")
+            all_cat_urls = cat_worksheet.col_values(1)[1:] # প্রথম কলামের ২ নম্বর রো থেকে সব
             
-            product = detail.get('product', {})
-            raw_id = product.get('localId')
-            current_p_id = f"p{raw_id}"
+            valid_urls = [u.strip() for u in all_cat_urls if u and u.strip().startswith('http')]
             
-            if current_p_id in self.visited_ids: return None
-            self.visited_ids.add(current_p_id)
+            if not valid_urls:
+                print("No valid URLs found in 'Categories' sheet.")
+                return
 
-            # বেসিক ইনফো
-            brand = product.get('producers', [{}])[0].get('name', 'N/A')
-            cat = " > ".join([b.get('name', '') for b in detail.get('category', {}).get('breadcrumbs', [])])
-            desc = re.sub('<[^<]+?>', '', product.get('description', '')).strip()
-            
-            # Attributes (Specs, EAN, MPN)
-            attrs = product.get('attributes', {}).get('attributes', [])
-            specs = "|".join([f"{a['name']}: {a['value']}" for a in attrs])
-            ean = next((a['value'] for a in attrs if 'ean' in a['name'].lower()), "N/A")
-            mpn = next((a['value'] for a in attrs if 'mpn' in a['name'].lower()), "N/A")
-            
-            # Images
-            imgs = ",".join(filter(None, [i.get('url') for i in product.get('media', {}).get('images', [])]))
-            if not imgs and product.get('mainImage'): imgs = product['mainImage'].get('url')
-            
-            # Price & Seller
-            price = detail['product']['minPrice']
-            seller = "N/A"
-            all_offers = (detail.get('offers', {}).get('regular', []) + detail.get('offers', {}).get('bidding', []))
-            if all_offers:
-                seller = sorted(all_offers, key=lambda x: x.get('price', 999999))[0].get('shop', {}).get('name', 'N/A')
+            print(f"Total Categories to process: {len(valid_urls)}")
 
-            # Storage Variation Logic (Fixing "Standard" issue)
-            storage = "Standard"
-            variants_list = detail.get('variants', [])
-            if variants_list:
-                curr_v = next((v for v in variants_list if str(v.get('platformProductId')) == str(raw_id)), None)
-                if curr_v: storage = curr_v.get('value')
+            for cat_url in valid_urls:
+                product_links = self.get_product_links(cat_url)
+                print(f"Found {len(product_links)} unique products in this category.")
+
+                for i, link in enumerate(product_links):
+                    print(f"[{i+1}/{len(product_links)}] Processing: {link}")
+                    data = self.scrape_product_details(link)
+                    if data:
+                        self.save_to_csv(data)      # লোকাল CSV ব্যাকআপ
+                        self.upload_to_gsheet(data) # গুগল শিটে লাইভ পুশ
+                    time.sleep(1)
             
-            # Backup: টাইটেল থেকে মেমোরি খোঁজা
-            if storage == "Standard":
-                mem_match = re.search(r'(\d+\s*(?:GB|TB))', product.get('name', ''), re.IGNORECASE)
-                if mem_match: storage = mem_match.group(1)
-
-            rows = []
-            rows.append({
-                "Product_URL": url, "Product_ID": current_p_id, "Parent_ID": parent_id_val if parent_id_val else current_p_id,
-                "Title": product.get('name'), "Storage_Variation": storage, "Category": cat, "Brand": brand,
-                "Price_EUR": price, "Seller_Name": seller, "EAN": ean, "MPN": mpn, "Images": imgs,
-                "Specs": specs, "Description": desc, "Stock_Status": "In Stock",
-                "Last_Updated": datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-            })
-
-            # যদি মেইন পেজ হয়, তবে সাব-ভ্যারিয়েন্ট লিঙ্কগুলোতেও যাবে
-            if not is_sub_variant:
-                for v in variants_list:
-                    v_id = f"p{v.get('platformProductId')}"
-                    if v_id not in self.visited_ids:
-                        v_url = f"{self.base_url}/p/{v.get('slug', {}).get('value', 'v')}-p{v.get('platformProductId')}/"
-                        time.sleep(1) # ডিলে
-                        v_data = self.scrape_product_details(v_url, True, current_p_id)
-                        if v_data: rows.extend(v_data)
-            return rows
+            print("\n--- SYNC COMPLETED SUCCESSFULLY ---")
         except Exception as e:
-            print(f"Error on {url}: {e}")
-            return None
-
-    def run(self, cat_url):
-        links = self.get_product_links(cat_url)
-        print(f"\n--- Phase 2: Scraping {len(links)} Products & Variants ---")
-        for i, link in enumerate(links):
-            print(f"[{i+1}/{len(links)}] Scraping: {link}")
-            data = self.scrape_product_details(link)
-            if data:
-                self.save_to_csv(data)
-                self.upload_to_gsheet(data)
-            time.sleep(1)
-        print("\nCOMPLETED! Master_Scrape.csv and Google Sheet updated.")
+            print(f"Critical System Error: {e}")
 
 if __name__ == "__main__":
-    target = "https://www.pazaruvaj.com/c/mobilni-telefoni-gsm-c3277/"
-    scraper = PazaruvajUltimateScraper()
-    scraper.run(target)
+    scraper = PazaruvajMasterScraper()
+    scraper.run()
