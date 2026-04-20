@@ -1,0 +1,27 @@
+name: Pazaruvaj Daily Scraper
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # প্রতিদিন রাত ২টায় রান হবে (UTC অনুযায়ী)
+  workflow_dispatch: # এটি থাকলে আপনি যেকোনো সময় ম্যানুয়ালি রান করতে পারবেন
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Scraper
+        env:
+          G_SHEET_CREDS: ${{ secrets.G_SHEET_CREDS }}
+        run: python main.py
