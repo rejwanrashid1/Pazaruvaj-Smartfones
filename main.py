@@ -131,7 +131,7 @@ class PazaruvajMasterScraper:
         return None
 
         
-def clean_html(self, raw_html):
+    def clean_html(self, raw_html):
         """HTML ট্যাগ রিমুভ করবে কিন্তু নতুন লাইন (\n) বজায় রাখবে"""
         if not raw_html:
             return "N/A"
