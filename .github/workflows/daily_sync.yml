@@ -2,8 +2,8 @@ name: Pazaruvaj Daily Scraper
 
 on:
   schedule:
-    - cron: '0 2 * * *' # প্রতিদিন রাত ২টায় রান হবে (UTC অনুযায়ী)
-  workflow_dispatch: # এটি থাকলে আপনি যেকোনো সময় ম্যানুয়ালি রান করতে পারবেন
+    - cron: '0 0 * * *' 
+  workflow_dispatch: # 
 
 jobs:
   build:
