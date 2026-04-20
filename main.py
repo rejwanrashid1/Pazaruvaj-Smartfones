@@ -139,6 +139,8 @@ class PazaruvajMasterScraper:
         if not detail: return None
 
         product = detail.get('product', {})
+        if not product: return None
+            
         raw_id = product.get('localId')
         current_p_id = f"p{raw_id}"
 
@@ -149,10 +151,11 @@ class PazaruvajMasterScraper:
         # ডাটা মেপিং
         brand = product.get('producers', [{}])[0].get('name', 'N/A')
         cat = " > ".join([b.get('name', '') for b in detail.get('category', {}).get('breadcrumbs', [])])
-        raw_description = product.get('description', '')
-        clean_desc = re.sub(r'<(br|p|div|li|tr|h1|h2|h3)[^>]*>', '\n', raw_description)  # ট্যাগ বদলে নিউ লাইন
+        raw_desc = product.get('description') or "" # যদি None থাকে তবে খালি স্ট্রিং নিবে
+        clean_desc = re.sub(r'<[^<]+?>', '', raw_desc).strip()
         clean_desc = re.sub(r'<[^>]+>', '', clean_desc)  # সব ট্যাগ রিমুভ
         clean_desc = re.sub(r'\n\s*\n', '\n', clean_desc).strip()  # বাড়তি স্পেস কমানো
+        p_name = product.get('name') or "Unknown Product"
 
         attrs = product.get('attributes', {}).get('attributes', [])
         specs = "\n".join([f"{a['name']}: {a['value']}" for a in attrs])
