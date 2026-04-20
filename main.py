@@ -149,56 +149,77 @@ def clean_html(self, raw_html):
         return text.strip()
     
     def scrape_product_details(self, url, is_sub_variant=False, parent_id_val=None):
-        """ভ্যারিয়েশন হ্যান্ডেলিং এবং মেমোরি ডিটেকশন সহ ডিটেইল স্ক্র্যাপার"""
+        """ভ্যারিয়েশন হ্যান্ডেলিং, মেমোরি ডিটেকশন এবং এরর ফিক্সড ভার্সন"""
         res = self.get_response(url)
-        if not res: return None
+        if not res or not res.text:
+            print(f"Skipping: Could not load URL {url}")
+            return None
 
         detail = self.extract_json_data(res.text)
-        if not detail: return None
 
-        product = detail.get('product', {})
-        if not product: return None
-            
-        raw_id = product.get('localId')
+        # ১. গুরুত্বপূর্ণ চেক: যদি জেসন ডাটাই না পাওয়া যায় (NoneType Fix)
+        if detail is None:
+            print(f"Skipping: Data not found in JSON for {url}")
+            return None
+
+        product = detail.get('product')
+        if not product:
+            print(f"Skipping: Product object missing for {url}")
+            return None
+
+        raw_id = product.get('localId') or product.get('id')
+        if not raw_id: return None
         current_p_id = f"p{raw_id}"
 
         # ডুপ্লিকেট এড়ানো
         if current_p_id in self.visited_ids: return None
         self.visited_ids.add(current_p_id)
 
-        # ডাটা মেপিং
-        brand = product.get('producers', [{}])[0].get('name', 'N/A')
-        cat = " > ".join([b.get('name', '') for b in detail.get('category', {}).get('breadcrumbs', [])])
-        # --- ফিক্সড লজিক: description বা name খালি থাকলেও আর এরর আসবে না ---
-        raw_desc = product.get('description') or "" # যদি None থাকে তবে খালি স্ট্রিং নিবে
-        clean_desc = re.sub(r'<[^<]+?>', '', raw_desc).strip()
+        # ২. ডাটা ম্যাপিং এবং সেফটি চেক
+        brand = product.get('producers', [{}])[0].get('name', 'N/A') if product.get('producers') else "N/A"
         
-        p_name = product.get('name') or "Unknown Product"
+        category_list = detail.get('category', {}).get('breadcrumbs', [])
+        cat_path = " > ".join([b.get('name', '') for b in category_list]) if category_list else "N/A"
+
         # ডেসক্রিপশন ফরম্যাটিং (আমাদের নতুন ফাংশন ব্যবহার করে)
         raw_description = product.get('description') or ""
         clean_desc = self.clean_html(raw_description)
 
-        # স্পেকস (Specs) ফরম্যাটিং (প্রতিটি আইটেম নতুন লাইনে আসবে)
-        attrs = product.get('attributes', {}).get('attributes', [])
-        specs = "\n".join([f"{a['name']}: {a['value']}" for a in attrs])
+        # ৩. স্পেকস (Specs) ফরম্যাটিং - প্রতিটি আইটেম নতুন লাইনে (\n)
+        attributes_obj = product.get('attributes', {})
+        attrs = attributes_obj.get('attributes', []) if attributes_obj else []
         
-        ean = next((a['value'] for a in attrs if 'ean' in a['name'].lower()), "N/A")
-        mpn = next((a['value'] for a in attrs if 'mpn' in a['name'].lower()), "N/A")
+        # জেনারেট স্পেকস উইথ নিউলাইন
+        specs_list = [f"{a.get('name', 'Unknown')}: {a.get('value', 'N/A')}" for a in attrs if a.get('name')]
+        specs = "\n".join(specs_list)
 
-        imgs = ",".join(filter(None, [i.get('url') for i in product.get('media', {}).get('images', [])]))
-        if not imgs and product.get('mainImage'): imgs = product['mainImage'].get('url')
+        ean = next((a.get('value') for a in attrs if 'ean' in str(a.get('name', '')).lower()), "N/A")
+        mpn = next((a.get('value') for a in attrs if 'mpn' in str(a.get('name', '')).lower()), "N/A")
 
-        price = detail['product']['minPrice']
+        # ইমেজ কালেকশন
+        media = product.get('media', {})
+        img_list = [img.get('url') for img in media.get('images', [])] if media else []
+        if not img_list and product.get('mainImage'): 
+            img_list = [product['mainImage'].get('url')]
+        images_str = ",".join(filter(None, img_list))
 
-        # Best Seller
+        # দাম (EUR)
+        price = detail.get('product', {}).get('minPrice', '0.00')
+
+        # বেস্ট সেলার (Seller)
         seller = "N/A"
-        all_offers = (detail.get('offers', {}).get('regular', []) + detail.get('offers', {}).get('bidding', []))
-        if all_offers:
-            seller = sorted(all_offers, key=lambda x: x.get('price', 999999))[0].get('shop', {}).get('name', 'N/A')
+        offers_data = detail.get('offers', {})
+        if offers_data:
+            all_offers = (offers_data.get('regular', []) + offers_data.get('bidding', []))
+            if all_offers:
+                try:
+                    seller = sorted(all_offers, key=lambda x: x.get('price', 999999))[0].get('shop', {}).get('name', 'N/A')
+                except: pass
 
-        # মেমোরি ভ্যারিয়েশন ফিক্স (Standard এর বদলে সঠিক ভ্যালু)
+        # ৪. মেমোরি ভ্যারিয়েশন ফিক্স (Storage Variation)
         storage = "Standard"
-        variants_list = detail.get('variants', [])
+        variants_list = detail.get('variants', []) or []
+        
         if variants_list:
             curr_v = next((v for v in variants_list if str(v.get('platformProductId')) == str(raw_id)), None)
             if curr_v: storage = curr_v.get('value')
@@ -207,23 +228,35 @@ def clean_html(self, raw_html):
             mem_match = re.search(r'(\d+\s*(?:GB|TB))', product.get('name', ''), re.IGNORECASE)
             if mem_match: storage = mem_match.group(1)
 
+        # ৫. ফাইনাল রো তৈরি (১৬টি কলামের মাস্টার ফরম্যাট)
         current_row = [{
-            "Product_URL": url, "Product_ID": current_p_id,
+            "Product_URL": url, 
+            "Product_ID": current_p_id,
             "Parent_ID": parent_id_val if parent_id_val else current_p_id,
-            "Title": product.get('name'), "Storage_Variation": storage, "Category": cat, "Brand": brand,
-            "Price_EUR": price, "Seller_Name": seller, "EAN": ean, "MPN": mpn, "Images": imgs,
-            "Specs": specs, "Description": clean_desc, "Stock_Status": "In Stock",
+            "Title": product.get('name', 'N/A'), 
+            "Storage_Variation": storage, 
+            "Category": cat_path, 
+            "Brand": brand,
+            "Price_EUR": price, 
+            "Seller_Name": seller, 
+            "EAN": ean, 
+            "MPN": mpn, 
+            "Images": images_str,
+            "Specs": specs, 
+            "Description": clean_desc, 
+            "Stock_Status": "In Stock",
             "Last_Updated": datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
         }]
 
-        # সাব-ভ্যারিয়েশন ভিজিট (যদি এটি মেইন কল হয়)
-        if not is_sub_variant:
+        # ৬. সাব-ভ্যারিয়েশন লিঙ্ক ভিজিট (Recursive Loop)
+        if not is_sub_variant and variants_list:
             for v in variants_list:
                 v_id = f"p{v.get('platformProductId')}"
                 if v_id not in self.visited_ids:
-                    v_url = f"{self.base_url}/p/{v.get('slug', {}).get('value', 'v')}-p{v.get('platformProductId')}/"
-                    time.sleep(1)
-                    v_data = self.scrape_product_details(v_url, True, current_p_id)
+                    v_slug = v.get('slug', {}).get('value', 'v')
+                    v_url = f"{self.base_url}/p/{v_slug}-p{v.get('platformProductId')}/"
+                    time.sleep(1.2) # সেফটি ডিলে
+                    v_data = self.scrape_product_details(v_url, is_sub_variant=True, parent_id_val=current_p_id)
                     if v_data: current_row.extend(v_data)
 
         return current_row
