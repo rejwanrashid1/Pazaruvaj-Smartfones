@@ -8,7 +8,7 @@ from curl_cffi import requests
 from lxml import html
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-
+import html as html_lib
 
 class PazaruvajMasterScraper:
     def __init__(self):
@@ -132,21 +132,23 @@ class PazaruvajMasterScraper:
 
         
     def clean_html(self, raw_html):
-        """HTML ট্যাগ রিমুভ করবে কিন্তু নতুন লাইন (\n) বজায় রাখবে"""
-        if not raw_html:
-            return "N/A"
+        """HTML ট্যাগ রিমুভ করবে এবং নতুন লাইন (\n) বজায় রাখবে"""
+        if not raw_html or raw_html == "None":
+            return ""
         
-        # ১. প্যারাগ্রাফ, ব্রেক এবং লিস্ট ট্যাগগুলোকে নিউ-লাইন দিয়ে বদলে দিবে
-        # এতে "AppleМодел" না হয়ে "Apple\nМодел" হবে
-        text = re.sub(r'<(br|p|div|li|tr|h1|h2|h3)[^>]*>', '\n', raw_html)
+        # ১. প্রথমে HTML entities আন-এস্কেপ করা (যেমন &nbsp; থেকে স্পেস)
+        text = html_lib.unescape(raw_html)
         
-        # ২. বাকি সব HTML ট্যাগ মুছে ফেলবে
+        # ২. <br>, <p>, <li> ট্যাগগুলোকে নিউ-লাইন দিয়ে রিপ্লেস করা
+        text = re.sub(r'<(br|p|div|li|tr|h1|h2|h3)[^>]*>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</(p|div|li|tr|h1|h2|h3)>', '\n', text, flags=re.IGNORECASE)
+        
+        # ৩. বাকি সব HTML ট্যাগ মুছে ফেলা
         text = re.sub(r'<[^>]+>', '', text)
         
-        # ৩. অতিরিক্ত খালি স্পেস বা মাল্টিপল নিউ-লাইন ক্লিন করবে
-        text = re.sub(r'\n\s*\n', '\n', text) 
-        
-        return text.strip()
+        # ৪. অতিরিক্ত স্পেস এবং মাল্টিপল নিউ-লাইন ক্লিন করা
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return "\n".join(lines)
     
     def scrape_product_details(self, url, is_sub_variant=False, parent_id_val=None):
         """ভ্যারিয়েশন হ্যান্ডেলিং, মেমোরি ডিটেকশন এবং এরর ফিক্সড ভার্সন"""
@@ -185,12 +187,12 @@ class PazaruvajMasterScraper:
         raw_description = product.get('description') or ""
         clean_desc = self.clean_html(raw_description)
 
-        # ৩. স্পেকস (Specs) ফরম্যাটিং - প্রতিটি আইটেম নতুন লাইনে (\n)
+        # ৩. স্পেকস (Specs) ফরম্যাটিং - প্রতিটি আইটেম নতুন লাইনে (\n) এবং ক্লিন HTML
         attributes_obj = product.get('attributes', {})
         attrs = attributes_obj.get('attributes', []) if attributes_obj else []
         
-        # জেনারেট স্পেকস উইথ নিউলাইন
-        specs_list = [f"{a.get('name', 'Unknown')}: {a.get('value', 'N/A')}" for a in attrs if a.get('name')]
+        # এখানে clean_html ব্যবহার করা হয়েছে যাতে <br> গুলো \n হয়ে যায়
+        specs_list = [f"{self.clean_html(str(a.get('name', 'Unknown')))}: {self.clean_html(str(a.get('value', 'N/A')))}" for a in attrs if a.get('name')]
         specs = "\n".join(specs_list)
 
         ean = next((a.get('value') for a in attrs if 'ean' in str(a.get('name', '')).lower()), "N/A")
