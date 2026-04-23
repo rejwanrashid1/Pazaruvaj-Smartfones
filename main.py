@@ -237,20 +237,36 @@ class PazaruvajMasterScraper:
         return results
 
     def trigger_wordpress_import(self):
-        """ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করার জন্য ট্রিগার এবং প্রসেসিং লিঙ্ক হিট করবে"""
+        """ব্রাউজার হিসেবে পরিচয় দিয়ে ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করবে"""
         t_url = "https://woocommerce-1599974-6345499.cloudwaysapps.com/wp-load.php?import_key=HacSr4&import_id=4&action=trigger"
         p_url = "https://woocommerce-1599974-6345499.cloudwaysapps.com/wp-load.php?import_key=HacSr4&import_id=4&action=processing"
         
-        print("\n--- Triggering WordPress Import ---")
+        # ব্রাউজার হেডার (Cloudways ব্লক এড়াতে)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+        }
+        
+        print("\n--- Sending Trigger to WordPress ---")
+        self.terminal_log("Initiating WordPress Import Trigger...") # টার্মিনালে দেখানোর জন্য
+
         try:
-            py_requests.get(t_url, timeout=30)
-            time.sleep(10)
-            for i in range(7):
-                py_requests.get(p_url, timeout=60)
-                print(f"Kickstart Ping {i+1} sent.")
-                time.sleep(20)
+            # ১. ট্রিগার পাঠানো
+            res = py_requests.get(t_url, headers=headers, timeout=30)
+            print(f"Trigger Status: {res.status_code}")
+
+            if res.status_code == 200:
+                print("Trigger Accepted. Sending processing pulses...")
+                # ২. ১০টি প্রসেসিং পালস পাঠানো যাতে ইম্পোর্ট নিশ্চিতভাবে শুরু হয়
+                for i in range(10):
+                    py_requests.get(p_url, headers=headers, timeout=60)
+                    print(f"Processing Pulse {i+1} sent.")
+                    time.sleep(15) # ১৫ সেকেন্ড বিরতি
+                
+                print("WordPress Import is successfully running in background.")
+            else:
+                print(f"Trigger Refused. Server Code: {res.status_code}")
         except Exception as e:
-            print(f"Trigger Error: {e}")
+            print(f"Trigger Error: {str(e)}")
 
     def run(self):
         # ১. মাস্টার সুইচ চেক
@@ -343,7 +359,7 @@ class PazaruvajMasterScraper:
 
         # ৭. ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করা
         self.trigger_wordpress_import()
-        self.update_live_status("SYNC COMPLETED SUCCESSFULLY")
+        self.update_live_status("ALL SYNC COMPLETED SUCCESSFULLY")
 
 if __name__ == "__main__":
     scraper = PazaruvajMasterScraper()
