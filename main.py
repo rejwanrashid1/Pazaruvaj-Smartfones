@@ -3,8 +3,9 @@ import time
 import re
 import csv
 import os
+import requests as py_requests  # ওয়ার্ডপ্রেস ট্রিগারের জন্য
 from datetime import datetime
-from curl_cffi import requests
+from curl_cffi import requests # স্ক্র্যাপিংয়ের জন্য
 from lxml import html
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -22,8 +23,9 @@ class PazaruvajMasterScraper:
             "Images", "Specs", "Description", "Stock_Status", "Last_Updated"
         ]
         self.visited_ids = set()
+        self.scraped_data_today = [] # আজকের সব ডাটা এখানে থাকবে
 
-        # ২. গুগল শিট কানেকশন এবং অটো-ক্লিন
+        # ২. গুগল শিট কানেকশন
         self.sheet_name = "Pazaruvaj Smartfones"
         self.setup_google_sheets()
 
@@ -31,7 +33,7 @@ class PazaruvajMasterScraper:
         self.init_csv()
 
     def setup_google_sheets(self):
-        """গুগল শিট কানেক্ট করবে এবং রান শুরু হওয়ার আগে Raw_Data ক্লিন করবে"""
+        """গুগল শিট কানেক্ট করবে"""
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds_json = os.environ.get('G_SHEET_CREDS')
@@ -44,24 +46,28 @@ class PazaruvajMasterScraper:
 
             self.client = gspread.authorize(creds)
             self.spreadsheet = self.client.open(self.sheet_name)
-            self.worksheet = self.spreadsheet.worksheet("Raw_Data")
-
-            # অটো-ক্লিন: নতুন ডাটা আসার আগে পুরনো সব মুছে হেডার বসানো
-            self.worksheet.clear()
-            self.worksheet.append_row(self.headers)
-            print(f"Connected to {self.sheet_name}. Raw_Data sheet has been cleaned.")
+            
+            # সরাসরি মাস্টার শিট এবং লগ শিট কানেক্ট করা
+            self.master_worksheet = self.spreadsheet.worksheet("Master_Sheet")
+            self.log_worksheet = self.spreadsheet.worksheet("Process_Log")
+            
+            print(f"Connected to {self.sheet_name}. Direct Master_Sheet Access Enabled.")
         except Exception as e:
             print(f"Google Sheets Setup Error: {e}")
-            self.worksheet = None
+            self.master_worksheet = None
 
     def update_live_status(self, message):
         """ড্যাশবোর্ডে লাইভ দেখানোর জন্য শিটে স্ট্যাটাস আপডেট করা"""
-        if not self.worksheet: return
         try:
-            # Process_Log শিটের H1 সেলে স্ট্যাটাস আপডেট হবে
-            status_sheet = self.spreadsheet.worksheet("Process_Log")
-            status_sheet.update_acell('H1', f"LIVE: {message} | {datetime.now().strftime('%H:%M:%S')}")
+            self.log_worksheet.update_acell('H1', f"LIVE: {message} | {datetime.now().strftime('%H:%M:%S')}")
         except: pass
+
+    def get_system_status(self):
+        """ড্যাশবোর্ডের J1 সেল থেকে ON/OFF স্ট্যাটাস চেক করা"""
+        try:
+            status = self.log_worksheet.acell('J1').value
+            return status.upper() if status else "ON"
+        except: return "ON"
 
     def init_csv(self):
         with open(self.filename, mode='w', newline='', encoding='utf-8-sig') as f:
@@ -73,14 +79,6 @@ class PazaruvajMasterScraper:
             writer = csv.DictWriter(f, fieldnames=self.headers)
             writer.writerows(data_list)
 
-    def upload_to_gsheet(self, data_list):
-        if self.worksheet:
-            try:
-                rows = [[item.get(h, "") for h in self.headers] for item in data_list]
-                self.worksheet.append_rows(rows)
-            except Exception as e:
-                print(f"GSheet Upload Error: {e}")
-
     def get_response(self, url):
         try:
             res = requests.get(url, impersonate=self.impersonate, timeout=30)
@@ -89,7 +87,6 @@ class PazaruvajMasterScraper:
             return None
 
     def get_product_links(self, category_url):
-        """আপনার দেওয়া স্পেসিফিক XPath ব্যবহার করে সব লিঙ্ক খোঁজা"""
         page = 1
         all_links = []
         xpath_query = '//li[@class="c-product-list__item"]//a[contains(@class, "c-product__secondary-cta") or (parent::h3 and not(ancestor::li//a[contains(@class, "c-product__secondary-cta")]))]'
@@ -112,10 +109,7 @@ class PazaruvajMasterScraper:
                         page_found += 1
 
             if page_found == 0: break
-
-             # --- লাইভ আপডেট এখানে দেওয়া হয়েছে ---
-            self.update_live_status(f"Page {page}: Found {page_found} items (Total: {len(all_links)})")
-            print(f"Page {page}: Found {page_found} items.")
+            self.update_live_status(f"Page {page}: Found {page_found} items.")
 
             if 'rel="next"' not in res.text: break
             page += 1
@@ -130,85 +124,54 @@ class PazaruvajMasterScraper:
             return props.get('initialData', {}).get('productDetail') or props.get('productDetail')
         return None
 
-        
     def clean_html(self, raw_html):
-        """HTML ট্যাগ রিমুভ করবে এবং নতুন লাইন (\n) বজায় রাখবে"""
-        if not raw_html or raw_html == "None":
-            return ""
-        
-        # ১. প্রথমে HTML entities আন-এস্কেপ করা (যেমন &nbsp; থেকে স্পেস)
+        if not raw_html or raw_html == "None": return ""
         text = html_lib.unescape(raw_html)
-        
-        # ২. <br>, <p>, <li> ট্যাগগুলোকে নিউ-লাইন দিয়ে রিপ্লেস করা
         text = re.sub(r'<(br|p|div|li|tr|h1|h2|h3)[^>]*>', '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</(p|div|li|tr|h1|h2|h3)>', '\n', text, flags=re.IGNORECASE)
-        
-        # ৩. বাকি সব HTML ট্যাগ মুছে ফেলা
         text = re.sub(r'<[^>]+>', '', text)
-        
-        # ৪. অতিরিক্ত স্পেস এবং মাল্টিপল নিউ-লাইন ক্লিন করা
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return "\n".join(lines)
     
     def scrape_product_details(self, url, is_sub_variant=False, parent_id_val=None):
-        """ভ্যারিয়েশন হ্যান্ডেলিং, মেমোরি ডিটেকশন এবং এরর ফিক্সড ভার্সন"""
         res = self.get_response(url)
-        if not res or not res.text:
-            print(f"Skipping: Could not load URL {url}")
-            return None
+        if not res or not res.text: return None
 
         detail = self.extract_json_data(res.text)
-
-        # ১. গুরুত্বপূর্ণ চেক: যদি জেসন ডাটাই না পাওয়া যায় (NoneType Fix)
-        if detail is None:
-            print(f"Skipping: Data not found in JSON for {url}")
-            return None
+        if detail is None: return None
 
         product = detail.get('product')
-        if not product:
-            print(f"Skipping: Product object missing for {url}")
-            return None
+        if not product: return None
 
         raw_id = product.get('localId') or product.get('id')
         if not raw_id: return None
         current_p_id = f"p{raw_id}"
 
-        # ডুপ্লিকেট এড়ানো
         if current_p_id in self.visited_ids: return None
         self.visited_ids.add(current_p_id)
 
-        # ২. ডাটা ম্যাপিং এবং সেফটি চেক
         brand = product.get('producers', [{}])[0].get('name', 'N/A') if product.get('producers') else "N/A"
-        
         category_list = detail.get('category', {}).get('breadcrumbs', [])
         cat_path = " > ".join([b.get('name', '') for b in category_list]) if category_list else "N/A"
+        
+        clean_desc = self.clean_html(product.get('description') or "")
 
-        # ডেসক্রিপশন ফরম্যাটিং (আমাদের নতুন ফাংশন ব্যবহার করে)
-        raw_description = product.get('description') or ""
-        clean_desc = self.clean_html(raw_description)
-
-        # ৩. স্পেকস (Specs) ফরম্যাটিং - প্রতিটি আইটেম নতুন লাইনে (\n) এবং ক্লিন HTML
         attributes_obj = product.get('attributes', {})
         attrs = attributes_obj.get('attributes', []) if attributes_obj else []
-        
-        # এখানে clean_html ব্যবহার করা হয়েছে যাতে <br> গুলো \n হয়ে যায়
         specs_list = [f"{self.clean_html(str(a.get('name', 'Unknown')))}: {self.clean_html(str(a.get('value', 'N/A')))}" for a in attrs if a.get('name')]
         specs = "\n".join(specs_list)
 
         ean = next((a.get('value') for a in attrs if 'ean' in str(a.get('name', '')).lower()), "N/A")
         mpn = next((a.get('value') for a in attrs if 'mpn' in str(a.get('name', '')).lower()), "N/A")
 
-        # ইমেজ কালেকশন
         media = product.get('media', {})
         img_list = [img.get('url') for img in media.get('images', [])] if media else []
         if not img_list and product.get('mainImage'): 
             img_list = [product['mainImage'].get('url')]
         images_str = ",".join(filter(None, img_list))
 
-        # দাম (EUR)
         price = detail.get('product', {}).get('minPrice', '0.00')
 
-        # বেস্ট সেলার (Seller)
         seller = "N/A"
         offers_data = detail.get('offers', {})
         if offers_data:
@@ -218,10 +181,8 @@ class PazaruvajMasterScraper:
                     seller = sorted(all_offers, key=lambda x: x.get('price', 999999))[0].get('shop', {}).get('name', 'N/A')
                 except: pass
 
-        # ৪. মেমোরি ভ্যারিয়েশন ফিক্স (Storage Variation)
         storage = "Standard"
         variants_list = detail.get('variants', []) or []
-        
         if variants_list:
             curr_v = next((v for v in variants_list if str(v.get('platformProductId')) == str(raw_id)), None)
             if curr_v: storage = curr_v.get('value')
@@ -230,8 +191,7 @@ class PazaruvajMasterScraper:
             mem_match = re.search(r'(\d+\s*(?:GB|TB))', product.get('name', ''), re.IGNORECASE)
             if mem_match: storage = mem_match.group(1)
 
-        # ৫. ফাইনাল রো তৈরি (১৬টি কলামের মাস্টার ফরম্যাট)
-        current_row = [{
+        current_row = {
             "Product_URL": url, 
             "Product_ID": current_p_id,
             "Parent_ID": parent_id_val if parent_id_val else current_p_id,
@@ -246,62 +206,108 @@ class PazaruvajMasterScraper:
             "Images": images_str,
             "Specs": specs, 
             "Description": clean_desc, 
-            "Stock_Status": "In Stock",
+            "Stock_Status": "instock", # ডিফল্ট instock
             "Last_Updated": datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-        }]
+        }
 
-        # ৬. সাব-ভ্যারিয়েশন লিঙ্ক ভিজিট (Recursive Loop)
+        results = [current_row]
+
         if not is_sub_variant and variants_list:
             for v in variants_list:
-                v_id = f"p{v.get('platformProductId')}"
-                if v_id not in self.visited_ids:
-                    v_slug = v.get('slug', {}).get('value', 'v')
-                    v_url = f"{self.base_url}/p/{v_slug}-p{v.get('platformProductId')}/"
-                    time.sleep(1.2) # সেফটি ডিলে
-                    v_data = self.scrape_product_details(v_url, is_sub_variant=True, parent_id_val=current_p_id)
-                    if v_data: current_row.extend(v_data)
+                v_slug = v.get('slug', {}).get('value', 'v')
+                v_url = f"{self.base_url}/p/{v_slug}-p{v.get('platformProductId')}/"
+                time.sleep(1)
+                v_data = self.scrape_product_details(v_url, is_sub_variant=True, parent_id_val=current_p_id)
+                if v_data: results.extend(v_data)
 
-        return current_row
+        return results
 
-
+    def trigger_wordpress_import(self):
+        """ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করার জন্য ট্রিগার এবং প্রসেসিং লিঙ্ক হিট করবে"""
+        t_url = "https://woocommerce-1599974-6345499.cloudwaysapps.com/wp-load.php?import_key=HacSr4&import_id=4&action=trigger"
+        p_url = "https://woocommerce-1599974-6345499.cloudwaysapps.com/wp-load.php?import_key=HacSr4&import_id=4&action=processing"
+        
+        print("\n--- Triggering WordPress Import ---")
+        try:
+            py_requests.get(t_url, timeout=30)
+            time.sleep(10)
+            for i in range(7):
+                py_requests.get(p_url, timeout=60)
+                print(f"Kickstart Ping {i+1} sent.")
+                time.sleep(20)
+        except Exception as e:
+            print(f"Trigger Error: {e}")
 
     def run(self):
-        self.update_live_status("Initializing Scraper...")
-        """Categories শিট থেকে লিঙ্ক নিয়ে কাজ শুরু করবে"""
-        print("\n--- System Starting: Reading Categories from Sheet ---")
+        # ১. মাস্টার সুইচ চেক
+        if self.get_system_status() == "OFF":
+            print("System is DISABLED from Dashboard. Exiting...")
+            return
+
+        self.update_live_status("Starting Cloud Scraper...")
+        
+        # ২. মাস্টার শিট থেকে বর্তমান ডাটা মেমোরিতে নেওয়া (স্টক চেক করার জন্য)
+        self.update_live_status("Reading existing Master data...")
         try:
-            # গুগল শিট থেকে ক্যাটাগরি লিঙ্ক পড়া
-            cat_worksheet = self.spreadsheet.worksheet("Categories")
-            all_cat_urls = cat_worksheet.col_values(1)[1:]  # প্রথম কলামের ২ নম্বর রো থেকে সব
-            valid_urls = [u.strip() for u in all_cat_urls if u and u.strip().startswith('http')]
+            existing_records = self.master_worksheet.get_all_records()
+            master_map = {str(r['Product_ID']): r for r in existing_records if r.get('Product_ID')}
+        except: master_map = {}
 
-            if not valid_urls:
-                print("No valid URLs found in 'Categories' sheet.")
-                self.update_live_status("Error: No URLs found.")
-                return
-
-            print(f"Total Categories to process: {len(valid_urls)}")
+        # ৩. ক্যাটাগরি শিট থেকে লিঙ্ক নিয়ে স্ক্র্যাপ করা
+        try:
+            cat_ws = self.spreadsheet.worksheet("Categories")
+            valid_urls = [u.strip() for u in cat_ws.col_values(1)[1:] if u and u.startswith('http')]
+            
+            scraped_ids_today = set()
+            all_results = []
 
             for cat_url in valid_urls:
-                self.update_live_status(f"Fetching links for: {cat_url.split('/')[-2]}")
+                self.update_live_status(f"Scanning Category: {cat_url.split('/')[-2]}")
                 product_links = self.get_product_links(cat_url)
-                print(f"Found {len(product_links)} unique products in this category.")
 
                 for i, link in enumerate(product_links):
                     self.update_live_status(f"Scraping Product {i+1}/{len(product_links)}")
-                    print(f"[{i + 1}/{len(product_links)}] Processing: {link}")
-                    data = self.scrape_product_details(link)
-                    if data:
-                        self.save_to_csv(data)  # লোকাল CSV ব্যাকআপ
-                        self.upload_to_gsheet(data)  # গুগল শিটে লাইভ পুশ
+                    data_list = self.scrape_product_details(link)
+                    if data_list:
+                        for item in data_list:
+                            scraped_ids_today.add(str(item['Product_ID']))
+                            all_results.append(item)
+                            self.save_to_csv([item]) # CSV ব্যাকআপ
                     time.sleep(1)
 
-            self.update_live_status("SYNC COMPLETED SUCCESSFULLY")
-            print("\n--- SYNC COMPLETED SUCCESSFULLY ---")
-        except Exception as e:
-            self.update_live_status(f"System Error: {str(e)[:20]}")
-            print(f"Critical System Error: {e}")
+            # ৪. ইন-স্টক এবং আউট-অফ-স্টক লজিক
+            final_rows_for_sheet = []
+            today_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
 
+            # আজকের নতুন ডাটা (In Stock)
+            for item in all_results:
+                item['Stock_Status'] = 'instock'
+                item['Last_Updated'] = today_str
+                final_rows_for_sheet.append(item)
+
+            # পুরনো ডাটা যা আজ পাওয়া যায়নি (Out of Stock)
+            for p_id, old_row in master_map.items():
+                if p_id not in scraped_ids_today:
+                    old_row['Stock_Status'] = 'outofstock'
+                    old_row['Last_Updated'] = today_str
+                    final_rows_for_sheet.append(old_row)
+
+            # ৫. মাস্টার শিট ক্লিন করে সরাসরি ডাটা রাইট করা
+            self.update_live_status("Finalizing Master Sheet...")
+            upload_data = [[r.get(h, "") for h in self.headers] for r in final_rows_for_sheet]
+            
+            self.master_worksheet.clear()
+            self.master_worksheet.append_row(self.headers)
+            if upload_data:
+                self.master_worksheet.append_rows(upload_data)
+
+            # ৬. ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করা
+            self.trigger_wordpress_import()
+            self.update_live_status("SYNC COMPLETED SUCCESSFULLY")
+
+        except Exception as e:
+            self.update_live_status(f"Error: {str(e)[:25]}")
+            print(f"Run Error: {e}")
 
 if __name__ == "__main__":
     scraper = PazaruvajMasterScraper()
