@@ -69,7 +69,7 @@ class PazaruvajMasterScraper:
                 duration = "{:02}:{:02}:{:02}".format(int(hours), int(minutes), int(seconds))
     
                 # ফাইনাল মেসেজ (যা ড্যাশবোর্ডে দেখাবে)
-                full_msg = f"LIVE: {message} | Timer: {duration} | {now.strftime('%H:%M:%S')}"
+                full_msg = f"LIVE: {message} | Timer: {duration} "
                 
                 # শিটে আপডেট করা
                 self.log_worksheet.update_acell('H1', full_msg)
