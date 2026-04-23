@@ -246,68 +246,90 @@ class PazaruvajMasterScraper:
 
         self.update_live_status("Starting Cloud Scraper...")
         
-        # ২. মাস্টার শিট থেকে বর্তমান ডাটা মেমোরিতে নেওয়া (স্টক চেক করার জন্য)
-        self.update_live_status("Reading existing Master data...")
+        # ২. মাস্টার শিট থেকে বর্তমান ডাটা মেমোরিতে নেওয়া
         try:
             existing_records = self.master_worksheet.get_all_records()
             master_map = {str(r['Product_ID']): r for r in existing_records if r.get('Product_ID')}
         except: master_map = {}
 
-        # ৩. ক্যাটাগরি শিট থেকে লিঙ্ক নিয়ে স্ক্র্যাপ করা
+        # ৩. স্ক্র্যাপিং শুরু
+        cat_ws = self.spreadsheet.worksheet("Categories")
+        valid_urls = [u.strip() for u in cat_ws.col_values(1)[1:] if u and u.startswith('http')]
+        
+        scraped_ids_today = set()
+        all_results = []
+        new_count = 0
+        update_count = 0
+
+        for cat_url in valid_urls:
+            product_links = self.get_product_links(cat_url)
+
+            for i, link in enumerate(product_links):
+                self.update_live_status(f"Scraping Product {i+1}/{len(product_links)}")
+                data_list = self.scrape_product_details(link)
+                if data_list:
+                    for item in data_list:
+                        p_id = str(item['Product_ID'])
+                        scraped_ids_today.add(p_id)
+                        
+                        # নতুন নাকি আপডেট চেক করা
+                        if p_id in master_map:
+                            update_count += 1
+                        else:
+                            new_count += 1
+                            
+                        all_results.append(item)
+                        self.save_to_csv([item])
+                time.sleep(1)
+
+        # ৪. স্টক আপডেট লজিক
+        final_rows_for_sheet = []
+        today_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+        oos_count = 0
+
+        # ইন-স্টক পণ্য
+        for item in all_results:
+            item['Stock_Status'] = 'instock'
+            item['Last_Updated'] = today_str
+            final_rows_for_sheet.append(item)
+
+        # আউট-অফ-স্টক পণ্য (আগে ছিল কিন্তু আজ পাওয়া যায়নি)
+        for p_id, old_row in master_map.items():
+            if p_id not in scraped_ids_today:
+                old_row['Stock_Status'] = 'outofstock'
+                old_row['Last_Updated'] = today_str
+                final_rows_for_sheet.append(old_row)
+                oos_count += 1
+
+        # ৫. মাস্টার শিট আপডেট
+        self.update_live_status("Finalizing Master Sheet...")
+        upload_data = [[r.get(h, "") for h in self.headers] for r in final_rows_for_sheet]
+        
+        self.master_worksheet.clear()
+        self.master_worksheet.append_row(self.headers)
+        if upload_data:
+            self.master_worksheet.append_rows(upload_data)
+
+        # --- ৬. প্রসেস লগ (History) আপডেট করা ---
+        # কলামগুলো: Date & Time, Total Scraped, New, Updated, Marked OOS, Status
         try:
-            cat_ws = self.spreadsheet.worksheet("Categories")
-            valid_urls = [u.strip() for u in cat_ws.col_values(1)[1:] if u and u.startswith('http')]
-            
-            scraped_ids_today = set()
-            all_results = []
-
-            for cat_url in valid_urls:
-                self.update_live_status(f"Scanning Category: {cat_url.split('/')[-2]}")
-                product_links = self.get_product_links(cat_url)
-
-                for i, link in enumerate(product_links):
-                    self.update_live_status(f"Scraping Product {i+1}/{len(product_links)}")
-                    data_list = self.scrape_product_details(link)
-                    if data_list:
-                        for item in data_list:
-                            scraped_ids_today.add(str(item['Product_ID']))
-                            all_results.append(item)
-                            self.save_to_csv([item]) # CSV ব্যাকআপ
-                    time.sleep(1)
-
-            # ৪. ইন-স্টক এবং আউট-অফ-স্টক লজিক
-            final_rows_for_sheet = []
-            today_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-
-            # আজকের নতুন ডাটা (In Stock)
-            for item in all_results:
-                item['Stock_Status'] = 'instock'
-                item['Last_Updated'] = today_str
-                final_rows_for_sheet.append(item)
-
-            # পুরনো ডাটা যা আজ পাওয়া যায়নি (Out of Stock)
-            for p_id, old_row in master_map.items():
-                if p_id not in scraped_ids_today:
-                    old_row['Stock_Status'] = 'outofstock'
-                    old_row['Last_Updated'] = today_str
-                    final_rows_for_sheet.append(old_row)
-
-            # ৫. মাস্টার শিট ক্লিন করে সরাসরি ডাটা রাইট করা
-            self.update_live_status("Finalizing Master Sheet...")
-            upload_data = [[r.get(h, "") for h in self.headers] for r in final_rows_for_sheet]
-            
-            self.master_worksheet.clear()
-            self.master_worksheet.append_row(self.headers)
-            if upload_data:
-                self.master_worksheet.append_rows(upload_data)
-
-            # ৬. ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করা
-            self.trigger_wordpress_import()
-            self.update_live_status("SYNC COMPLETED SUCCESSFULLY")
-
+            log_row = [
+                today_str,           # Date & Time
+                len(all_results),    # Total Scraped
+                new_count,           # New Products
+                update_count,        # Updated Products
+                oos_count,           # Marked Out of Stock
+                "Success"            # Status
+            ]
+            # Process_Log শিটের একদম নিচে নতুন রো হিসেবে যোগ হবে
+            self.log_worksheet.append_row(log_row)
+            print("History Log updated in Process_Log.")
         except Exception as e:
-            self.update_live_status(f"Error: {str(e)[:25]}")
-            print(f"Run Error: {e}")
+            print(f"Logging Error: {e}")
+
+        # ৭. ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করা
+        self.trigger_wordpress_import()
+        self.update_live_status("SYNC COMPLETED SUCCESSFULLY")
 
 if __name__ == "__main__":
     scraper = PazaruvajMasterScraper()
