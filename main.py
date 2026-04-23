@@ -24,7 +24,8 @@ class PazaruvajMasterScraper:
         ]
         self.visited_ids = set()
         self.scraped_data_today = [] # আজকের সব ডাটা এখানে থাকবে
-
+        self.session_start = datetime.now() # স্ক্র্যাপার শুরুর সময় রেকর্ড করা হলো
+        
         # ২. গুগল শিট কানেকশন
         self.sheet_name = "Pazaruvaj Smartfones"
         self.setup_google_sheets()
@@ -58,9 +59,23 @@ class PazaruvajMasterScraper:
 
     def update_live_status(self, message):
         """ড্যাশবোর্ডে লাইভ দেখানোর জন্য শিটে স্ট্যাটাস আপডেট করা"""
-        try:
-            self.log_worksheet.update_acell('H1', f"LIVE: {message} | {datetime.now().strftime('%H:%M:%S')}")
-        except: pass
+       try:
+            # কতক্ষণ ধরে চলছে তা হিসাব করা
+            now = datetime.now()
+            elapsed = now - self.session_start
+            
+            # HH:MM:SS ফরম্যাটে নেওয়া
+            hours, remainder = divmod(elapsed.total_seconds(), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            duration = "{:02}:{:02}:{:02}".format(int(hours), int(minutes), int(seconds))
+
+            # ফাইনাল মেসেজ (যা ড্যাশবোর্ডে দেখাবে)
+            full_msg = f"LIVE: {message} | Timer: {duration} | {now.strftime('%H:%M:%S')}"
+            
+            # শিটে আপডেট করা
+            self.log_worksheet.update_acell('H1', full_msg)
+        except Exception as e: 
+            print(f"Status Update Error: {e}")
 
     def get_system_status(self):
         """ড্যাশবোর্ডের J1 সেল থেকে ON/OFF স্ট্যাটাস চেক করা"""
