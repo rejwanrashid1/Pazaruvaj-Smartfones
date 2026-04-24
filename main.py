@@ -237,34 +237,40 @@ class PazaruvajMasterScraper:
         return results
 
     def trigger_wordpress_import(self):
-        """ব্রাউজার হিসেবে পরিচয় দিয়ে ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করবে"""
+        """ব্রাউজার হেডার সহ ওয়ার্ডপ্রেস ইম্পোর্ট শুরু করবে"""
         t_url = "https://woocommerce-1599974-6345499.cloudwaysapps.com/wp-load.php?import_key=HacSr4&import_id=4&action=trigger"
         p_url = "https://woocommerce-1599974-6345499.cloudwaysapps.com/wp-load.php?import_key=HacSr4&import_id=4&action=processing"
         
         # ব্রাউজার হেডার (Cloudways ব্লক এড়াতে)
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+            "Accept": "text/html, application/xhtml+xml, application/xml;q=0.9, image/avif, image/webp,*/*;q=0.8",
+            "Cache-Control": "no-cache"
         }
         
-        print("\n--- Sending Trigger to WordPress ---")
+        # ক্যাশ বাইপাস করার জন্য টাইমস্ট্যাম্প
+        timestamp = int(time.time())
+        t_url_final = f"{t_url}&v={timestamp}"
+        p_url_final = f"{p_url}&v={timestamp}"
 
+        print("\n--- Sending Trigger to WordPress (Browser Mode) ---")
         try:
             # ১. ট্রিগার পাঠানো
-            res = py_requests.get(t_url, headers=headers, timeout=30)
+            res = py_requests.get(t_url_final, headers=headers, timeout=30)
             print(f"Trigger Status: {res.status_code}")
 
             if res.status_code == 200:
                 print("Trigger Accepted. Sending processing pulses...")
-                # ২. ১০টি প্রসেসিং পালস পাঠানো যাতে ইম্পোর্ট নিশ্চিতভাবে শুরু হয়
+                # ২. ১০টি প্রসেসিং পালস পাঠানো
                 for i in range(10):
                     try:
-                        py_requests.get(p_url, headers=headers, timeout=60)
+                        py_requests.get(p_url_final, headers=headers, timeout=60)
                         print(f"Processing Pulse {i+1} sent.")
                     except:
-                        print(f"Pulse {i+1} timeout, but continuing...")
-                    time.sleep(15) # ১৫ সেকেন্ড বিরতি
+                        print(f"Pulse {i+1} timeout, continuing...")
+                    time.sleep(15)
                 
-                print("WordPress Import is successfully running in background.")
+                print("SUCCESS: WordPress Import is running in background.")
             else:
                 print(f"Trigger Refused. Server Code: {res.status_code}")
         except Exception as e:
