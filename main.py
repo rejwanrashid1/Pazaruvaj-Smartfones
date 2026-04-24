@@ -247,7 +247,6 @@ class PazaruvajMasterScraper:
         }
         
         print("\n--- Sending Trigger to WordPress ---")
-        self.terminal_log("Initiating WordPress Import Trigger...") # টার্মিনালে দেখানোর জন্য
 
         try:
             # ১. ট্রিগার পাঠানো
@@ -258,8 +257,11 @@ class PazaruvajMasterScraper:
                 print("Trigger Accepted. Sending processing pulses...")
                 # ২. ১০টি প্রসেসিং পালস পাঠানো যাতে ইম্পোর্ট নিশ্চিতভাবে শুরু হয়
                 for i in range(10):
-                    py_requests.get(p_url, headers=headers, timeout=60)
-                    print(f"Processing Pulse {i+1} sent.")
+                    try:
+                        py_requests.get(p_url, headers=headers, timeout=60)
+                        print(f"Processing Pulse {i+1} sent.")
+                    except:
+                        print(f"Pulse {i+1} timeout, but continuing...")
                     time.sleep(15) # ১৫ সেকেন্ড বিরতি
                 
                 print("WordPress Import is successfully running in background.")
@@ -267,7 +269,6 @@ class PazaruvajMasterScraper:
                 print(f"Trigger Refused. Server Code: {res.status_code}")
         except Exception as e:
             print(f"Trigger Error: {str(e)}")
-
     def run(self):
         # ১. মাস্টার সুইচ চেক
         if self.get_system_status() == "OFF":
